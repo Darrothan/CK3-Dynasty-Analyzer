@@ -3,6 +3,7 @@ import { Float64, Table, Utf8, vectorFromArray, type Vector } from 'apache-arrow
 import workerUrl from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
 import wasmUrl from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
 import { numericColumns, type Tables } from './model';
+import { analyticalQuerySql, characterSkillsViewSql, characterViewSql, cohortSql, type AnalyticalQuery, type CohortFilters } from './analytics';
 
 const identifier = (name: string) => `"${name.replaceAll('"', '""')}"`;
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
@@ -32,8 +33,19 @@ export async function createDatabase(tables: Tables, onTable: (name: string) => 
   const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
   await db.instantiate(wasmUrl);
   const connection = await db.connect();
+  const emptySchemas: Record<string, string> = {
+    houses: 'id VARCHAR, name VARCHAR, dynasty_id VARCHAR',
+    dynasties: 'id VARCHAR, name VARCHAR',
+    titles: 'id VARCHAR, name VARCHAR, holder_id VARCHAR',
+    traits: 'id VARCHAR, name VARCHAR',
+    character_traits: 'character_id VARCHAR, trait_id VARCHAR',
+    relationships: 'character_id VARCHAR, relative_id VARCHAR, relation VARCHAR',
+  };
   for (const [name, rows] of Object.entries(tables)) {
-    if (!rows.length) continue;
+    if (!rows.length) {
+      if (Object.hasOwn(emptySchemas, name)) await connection.query(`CREATE TABLE ${identifier(name)} (${emptySchemas[name]})`);
+      continue;
+    }
     onTable(name);
     const columns = Object.keys(rows[0]);
     const vectors: Record<string, Vector> = {};
@@ -46,7 +58,29 @@ export async function createDatabase(tables: Tables, onTable: (name: string) => 
     }
     await connection.insertArrowTable(new Table(vectors), { name, create: true });
   }
+  if (tables.characters.length) {
+    await connection.query(characterViewSql);
+    await connection.query(characterSkillsViewSql);
+  }
   return { db, connection };
+}
+
+export async function queryAnalytics(connection: duckdb.AsyncDuckDBConnection, query: AnalyticalQuery) {
+  const result = await connection.query(analyticalQuerySql(query));
+  return result.toArray().map(row => Object.fromEntries(Object.entries(row.toJSON()).map(([key, value]) => {
+    if (typeof value === 'bigint') return [key, Number.isSafeInteger(Number(value)) ? Number(value) : value.toString()];
+    return [key, value ?? null];
+  })));
+}
+
+export async function queryCohorts(connection: duckdb.AsyncDuckDBConnection, filters: CohortFilters) {
+  const result = await connection.query(cohortSql(filters));
+  return result.toArray().map(row => ({
+    cohort: String(row.cohort), population: Number(row.population), ageCount: Number(row.age_count),
+    historicalUnknown: Number(row.historical_unknown),
+    meanAge: row.mean_age == null ? null : Number(row.mean_age),
+    medianAge: row.median_age == null ? null : Number(row.median_age),
+  }));
 }
 
 export async function queryTable(

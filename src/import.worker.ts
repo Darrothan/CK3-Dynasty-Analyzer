@@ -1,7 +1,9 @@
 import { Jomini } from 'jomini';
 import { extractGamestate } from './import';
 import { normalize, type Snapshot } from './model';
-import { createDatabase, exportTable, queryTable } from './database';
+import { createDatabase, exportTable, queryAnalytics, queryCohorts, queryTable } from './database';
+import { createLocalization, type LocalizationFile } from './localization';
+import { metrics, type AnalyticalQuery, type CohortFilters } from './analytics';
 
 let bytes: Uint8Array | null = null;
 let snapshot: Snapshot | null = null;
@@ -15,6 +17,9 @@ self.onmessage = async (event: MessageEvent<{
   kind?: string;
   categoryFilter?: { column: string; value: string; isMissing: boolean } | null;
   selectedColumns?: string[];
+  localizationFiles?: File[];
+  cohort?: CohortFilters;
+  analytics?: AnalyticalQuery;
 }>) => {
   try {
     const parser = await Jomini.initialize();
@@ -22,6 +27,16 @@ self.onmessage = async (event: MessageEvent<{
       post('Reading file');
       if (event.data.file.size > 512 * 1024 * 1024) throw new Error('The file exceeds the 512 MiB import limit.');
       const input = new Uint8Array(await event.data.file.arrayBuffer());
+      const files = event.data.localizationFiles ?? [];
+      if (files.reduce((sum, file) => sum + file.size, 0) > 128 * 1024 * 1024) throw new Error('Localization files exceed the 128 MiB import limit.');
+      const localizationFiles: LocalizationFile[] = [];
+      if (files.length) post('Reading optional local localization files');
+      for (const file of files) {
+        if (!/\.ya?ml$/i.test(file.name)) continue;
+        const content = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
+        localizationFiles.push({ path: file.webkitRelativePath || file.name, content });
+      }
+      const localization = createLocalization(localizationFiles);
       post('Extracting gamestate');
       bytes = extractGamestate(input);
       post('Parsing game data');
@@ -30,8 +45,10 @@ self.onmessage = async (event: MessageEvent<{
         const data: Record<string, unknown> = {};
         for (const name of ['date', 'meta_data', 'living', 'dead_unprunable', 'dynasties', 'culture_manager', 'traits_lookup', 'faiths', 'rites', 'religion']) data[name] = query.at(`/${name}`);
         data.landed_titles = { landed_titles: query.at('/landed_titles/landed_titles') };
-        return normalize(data);
+        return normalize(data, localization);
       });
+      if (files.length && !localization.entries) snapshot.warnings.push('No CK3 localization entries were found in the selected files.');
+      if (localization.collisions) snapshot.warnings.push(`Localization: ${localization.collisions} conflicting definitions; later sorted file/line wins.`);
       if (!snapshot.tables.characters.length) throw new Error('No supported character records found. This may not be a compatible CK3 gamestate.');
       post('Building local DuckDB tables');
       database = await createDatabase(snapshot.tables, name => post(`Building analytical table: ${name}`));
@@ -50,9 +67,18 @@ self.onmessage = async (event: MessageEvent<{
         const id = String(house.dynasty_id), names = houseNames.get(id) ?? [];
         names.push(String(house.name)); houseNames.set(id, names);
       }
-      const dynasties = [...dynastyCounts].map(([id, count]) => ({ id, count, living: dynastyLiving.get(id) ?? 0, house: houseNames.get(id)?.[0] ?? '', houseSearch: houseNames.get(id)?.join(' ') ?? '' })).sort((a, b) => b.count - a.count);
+      const dynastyNames = new Map(snapshot.tables.dynasties.map(d => [String(d.id), d.name == null ? '' : String(d.name)]));
+      const dynasties = [...dynastyCounts].map(([id, count]) => ({ id, name: dynastyNames.get(id) ?? '', count, living: dynastyLiving.get(id) ?? 0, house: houseNames.get(id)?.[0] ?? '', houseSearch: houseNames.get(id)?.join(' ') ?? '' })).sort((a, b) => b.count - a.count);
       const living = snapshot.tables.characters.filter(row => row.status === 'Living').length;
-      self.postMessage({ type: 'ready', date: snapshot.date, warnings: snapshot.warnings, tables, dynasties, living });
+      const houses = snapshot.tables.houses.map(h => ({ id: String(h.id), dynastyId: h.dynasty_id == null ? '' : String(h.dynasty_id), name: String(h.name ?? `House ${h.id}`) }));
+      self.postMessage({ type: 'ready', date: snapshot.date, warnings: snapshot.warnings, tables, dynasties, houses, living });
+    } else if (event.data.type === 'cohorts' && database && event.data.cohort) {
+      const cohorts = await queryCohorts(database.connection, event.data.cohort);
+      self.postMessage({ type: 'cohorts', requestId: event.data.requestId, cohorts });
+    } else if (event.data.type === 'analytics' && database && event.data.analytics) {
+      const request = event.data.analytics;
+      const rows = await queryAnalytics(database.connection, request);
+      self.postMessage({ type: 'analytics', requestId: event.data.requestId, rows, definitions: request.metricIds.map(id => ({ id, ...metrics[id] })) });
     } else if (event.data.type === 'query' && snapshot && database) {
       const dataset = event.data.dataset || 'characters';
       const all = snapshot.tables[dataset];
