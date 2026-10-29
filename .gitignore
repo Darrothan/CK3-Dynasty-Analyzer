@@ -1,0 +1,4 @@
+# Ignore zipped and unzipped example save files
+*.ck3
+gamestate
+example_saves/
