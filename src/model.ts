@@ -23,6 +23,13 @@ const numeric = (value: unknown): number | null => {
   return Number.isFinite(number) ? number : null;
 };
 
+export function savedRgb(value: unknown): string | null {
+  if (!isObject(value) || !Array.isArray(value.rgb) || value.rgb.length !== 3) return null;
+  const channels = value.rgb.map(numeric);
+  if (channels.some(channel => channel === null || !Number.isInteger(channel) || channel < 0 || channel > 255)) return null;
+  return `#${channels.map(channel => Number(channel).toString(16).padStart(2, '0')).join('')}`;
+}
+
 function records(value: unknown): [string, Record<string, unknown>][] {
   if (!isObject(value)) return [];
   return Object.entries(value).flatMap(([id, record]) => {
@@ -34,7 +41,7 @@ function records(value: unknown): [string, Record<string, unknown>][] {
   });
 }
 
-export function normalize(data: Record<string, unknown>, localization?: Localization): Snapshot {
+export function normalize(data: Record<string, unknown>, localization?: Localization, definitions?: GameDefinitions): Snapshot {
   const nonBlank = (value: unknown) => {
     const raw = text(value);
     return raw !== null && raw.trim() ? raw : null;
@@ -62,20 +69,36 @@ export function normalize(data: Record<string, unknown>, localization?: Localiza
     const resolved = key ? localization?.lookup(key) ?? (!key.includes('_') && /[\s'-]/.test(key) ? key : null) : null;
     return name && resolved ? `${resolved}${name}` : name;
   };
-  const dynastyName = (dynasty: Record<string, unknown>) => {
+  const dynastyName = (dynasty: Record<string, unknown>, id: string) => {
     const explicit = nonBlank(dynasty.localized_name) ?? nestedName(dynasty);
     const key = text(dynasty.key);
-    return label(explicit) ?? (key ? localization?.lookup(key) ?? null : null);
+    const definition = key ? definitions?.dynasties.get(key) : undefined;
+    const founding = houseById.get(id);
+    const foundingKey = founding && text(founding.dynasty) === id ? text(founding.key) : null;
+    const foundingName = founding && text(founding.dynasty) === id
+      ? nonBlank(founding.localized_name) ?? nonBlank(founding.name) ?? (foundingKey ? definitions?.houses.get(foundingKey)?.name : null)
+      : null;
+    return label(explicit) ?? label(foundingName) ?? label(definition?.name) ?? (key ? localization?.lookup(key) ?? null : null);
   };
-  const dynastyLabel = (dynasty: Record<string, unknown>) => withPrefix(dynastyName(dynasty), dynasty.prefix);
-  const houseLabel = (house: Record<string, unknown>) => {
+  const dynastyLabel = (dynasty: Record<string, unknown>, id: string) => {
+    const founding = houseById.get(id);
+    const definition = definitions?.dynasties.get(text(dynasty.key) ?? '');
+    return withPrefix(dynastyName(dynasty, id), dynasty.prefix ?? (founding && text(founding.dynasty) === id ? founding.prefix : null) ?? definition?.prefix);
+  };
+  const houseLabel = (house: Record<string, unknown>, id: string) => {
     const explicit = nonBlank(house.localized_name) ?? nonBlank(house.name);
     const key = text(house.key);
-    const ownName = label(explicit) ?? (key ? localization?.lookup(key) ?? null : null);
-    if (ownName) return withPrefix(ownName, house.prefix);
+    const definition = key ? definitions?.houses.get(key) : undefined;
     const dynastyId = text(house.dynasty);
     const dynasty = dynastyId === null ? undefined : dynastyById.get(dynastyId);
-    return dynasty ? withPrefix(dynastyName(dynasty), house.prefix ?? dynasty.prefix) : null;
+    const foundingName = dynasty && dynastyId === id ? dynastyName(dynasty, id) : null;
+    const ownName = label(explicit) ?? label(definition?.name) ?? label(foundingName) ?? (key ? localization?.lookup(key) ?? key : null);
+    if (ownName) return withPrefix(ownName, house.prefix ?? definition?.prefix ?? (foundingName && dynasty ? dynasty.prefix ?? definitions?.dynasties.get(text(dynasty.key) ?? '')?.prefix : null));
+    return dynasty && dynastyId !== null ? withPrefix(dynastyName(dynasty, dynastyId), house.prefix ?? dynasty.prefix) : null;
+  };
+  const pillarLabel = (value: unknown) => {
+    const key = nonBlank(value);
+    return key ? localization?.lookup(`${key}_name`) ?? label(key) : null;
   };
   const culturesRoot = isObject(data.culture_manager) ? data.culture_manager : {};
   const cultures = records(culturesRoot.cultures);
@@ -132,9 +155,11 @@ export function normalize(data: Record<string, unknown>, localization?: Localiza
           : c.female === 'no' || c.female === false || (c.female === undefined && nonBlank(c.first_name) !== null && ['valid', 'placeholder'].includes(birthDate.quality)) ? 'Male' : 'Unknown',
         age, skill_0: numeric(skills[0]), skill_1: numeric(skills[1]), skill_2: numeric(skills[2]), skill_3: numeric(skills[3]), skill_4: numeric(skills[4]), skill_5: numeric(skills[5]),
         age_group: age === null ? 'Unknown' : age < 16 ? '0–15' : age < 30 ? '16–29' : age < 50 ? '30–49' : age < 70 ? '50–69' : '70+',
-        house_id: houseId, house: houseId === null ? null : house ? houseLabel(house) ?? `House ${houseId}` : `Unresolved house ${houseId}`,
-        dynasty_id: dynastyId, dynasty: dynastyId === null ? null : dynasty ? dynastyLabel(dynasty) ?? `Dynasty ${dynastyId}` : `Unresolved dynasty ${dynastyId}`,
+        house_id: houseId, house: houseId === null ? null : house ? houseLabel(house, houseId) ?? `House ${houseId}` : `Unresolved house ${houseId}`,
+        dynasty_id: dynastyId, dynasty: dynastyId === null ? null : dynasty ? dynastyLabel(dynasty, dynastyId) ?? `Dynasty ${dynastyId}` : `Unresolved dynasty ${dynastyId}`,
         culture_id: cultureId, culture: cultureId === null ? null : culture ? label(nestedName(culture) ?? culture.culture_template) ?? `Culture ${cultureId}` : `Unresolved culture ${cultureId}`,
+        heritage_key: culture ? text(culture.heritage) : null, heritage: culture ? pillarLabel(culture.heritage) : null,
+        language_key: culture ? text(culture.language) : null, language: culture ? pillarLabel(culture.language) : null,
         rite_id: riteId, faith_id: faithId,
         faith: faithId === null ? (riteId === null ? null : `Unresolved rite ${riteId}`) : faith ? label(nestedName(faith) ?? faith.tag) ?? `Faith ${faithId}` : `Unresolved faith ${faithId}`,
         rite: riteId === null ? null : rite ? label(nestedName(rite) ?? rite.rite_type) ?? `Rite ${riteId}` : `Unresolved rite ${riteId}`,
@@ -178,12 +203,12 @@ export function normalize(data: Record<string, unknown>, localization?: Localiza
     tables: {
       save_metadata: [{ source_path: 'meta_data', date, version: text(metadata.version), save_game_version: text(metadata.save_game_version), meta_date: text(metadata.meta_date), ironman: text(metadata.ironman) }],
       characters,
-      dynasties: dynasties.map(([id, d]) => ({ id, source_path: `dynasties/dynasties/${id}`, key: text(d.key), name: dynastyLabel(d), name_source: nestedName(d), localized_name: text(d.localized_name), prefix_key: text(d.prefix), head_id: text(d.dynasty_head) })),
-      houses: houses.map(([id, h]) => ({ id, source_path: `dynasties/dynasty_house/${id}`, name: houseLabel(h), name_key: text(h.name), localized_name: text(h.localized_name), key: text(h.key), prefix_key: text(h.prefix), dynasty_id: text(h.dynasty), head_id: text(h.head_of_house), found_date: text(h.found_date) })),
-      cultures: cultures.map(([id, c]) => ({ id, source_path: `culture_manager/cultures/${id}`, name: label(nestedName(c) ?? c.culture_template), name_source: nestedName(c), key: text(c.culture_template) })),
-      faiths: faiths.map(([id, f]) => ({ id, source_path: `faiths/database/${id}`, name: label(nestedName(f) ?? f.tag), name_source: nestedName(f), religion_id: text(f.religion), tag: text(f.tag) })),
-      religions: religions.map(([id, r]) => ({ id, source_path: `religion/religions/${id}`, name: label(nestedName(r) ?? r.tag), name_source: nestedName(r), tag: text(r.tag) })),
-      rites: rites.map(([id, r]) => ({ id, source_path: `rites/database/${id}`, name: label(nestedName(r) ?? r.rite_type), name_source: nestedName(r), key: text(r.rite_type), faith_id: text(r.faith) })),
+      dynasties: dynasties.map(([id, d]) => ({ id, source_path: `dynasties/dynasties/${id}`, key: text(d.key), name: dynastyLabel(d, id), name_source: nestedName(d), localized_name: text(d.localized_name), prefix_key: text(d.prefix), head_id: text(d.dynasty_head) })),
+      houses: houses.map(([id, h]) => ({ id, source_path: `dynasties/dynasty_house/${id}`, name: houseLabel(h, id), name_key: text(h.name), localized_name: text(h.localized_name), key: text(h.key), prefix_key: text(h.prefix), dynasty_id: text(h.dynasty), head_id: text(h.head_of_house), found_date: text(h.found_date) })),
+      cultures: cultures.map(([id, c]) => ({ id, source_path: `culture_manager/cultures/${id}`, name: label(nestedName(c) ?? c.culture_template), name_source: nestedName(c), key: text(c.culture_template), heritage_key: text(c.heritage), heritage: pillarLabel(c.heritage), language_key: text(c.language), language: pillarLabel(c.language) })),
+      faiths: faiths.map(([id, f]) => ({ id, source_path: `faiths/database/${id}`, name: label(nestedName(f) ?? f.tag), name_source: nestedName(f), religion_id: text(f.religion), tag: text(f.tag), color: savedRgb(f.color ?? (isObject(f.data) ? f.data.color : null)) })),
+      religions: religions.map(([id, r]) => ({ id, source_path: `religion/religions/${id}`, name: label(nestedName(r) ?? r.tag ?? r.religion_type), name_source: nestedName(r), tag: text(r.tag ?? r.religion_type) })),
+      rites: rites.map(([id, r]) => ({ id, source_path: `rites/database/${id}`, name: label(nestedName(r) ?? r.rite_type), name_source: nestedName(r), key: text(r.rite_type), faith_id: text(r.faith), color: savedRgb((isObject(r.data) ? r.data.color : null) ?? r.color) })),
       titles: titles.map(([id, t]) => ({ id, source_path: `landed_titles/landed_titles/${id}`, key: text(t.key), name: label((isObject(t.title_name_data) ? text(t.title_name_data.name) : null) ?? t.key), holder_id: text(t.holder) })),
       title_history: titles.flatMap(([id, t]) => isObject(t.history) ? Object.entries(t.history).flatMap(([dateKey, holder]) =>
         items(holder).map(text).filter((value): value is string => value !== null).map(holderId => ({
@@ -227,5 +252,6 @@ export function normalize(data: Record<string, unknown>, localization?: Localiza
   };
 }
 import type { Localization } from './localization';
+import type { GameDefinitions } from './gameData';
 import { ageAt, parseDate } from './dates';
 export { ageAt } from './dates';

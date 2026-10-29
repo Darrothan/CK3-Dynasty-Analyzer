@@ -18,6 +18,8 @@ export interface CohortFilters {
   sex: CohortSex;
   ruler?: RulerFilter;
   historical?: HistoricalFilter | null;
+  minAge?: number | null;
+  maxAge?: number | null;
 }
 
 export interface MetricDefinition {
@@ -91,6 +93,12 @@ export function historicalPredicate(filter: HistoricalFilter): string {
 export function characterFilterClauses(filters: CohortFilters, scope: 'selected' | 'world' | 'rest'): string[] {
   if (!['Both', 'Living', 'Deceased'].includes(filters.status) || !['All', 'Female', 'Male', 'Unknown'].includes(filters.sex) || !['All', 'Ruler', 'Non-ruler', 'Unknown'].includes(filters.ruler ?? 'All')) throw new Error('Invalid cohort filter.');
   const where: string[] = [];
+  for (const age of [filters.minAge, filters.maxAge]) {
+    if (age != null && (!Number.isInteger(age) || age < 0 || age > 1000)) throw new Error('Age must be a whole number between 0 and 1000.');
+  }
+  if (filters.minAge != null && filters.maxAge != null && filters.minAge > filters.maxAge) throw new Error('Minimum age exceeds maximum age.');
+  if (filters.minAge != null) where.push(`age >= ${filters.minAge}`);
+  if (filters.maxAge != null) where.push(`age <= ${filters.maxAge}`);
   if (filters.status !== 'Both') where.push(`status = ${literal(filters.status)}`);
   if (filters.sex !== 'All') where.push(`sex = ${literal(filters.sex)}`);
   if (filters.ruler && filters.ruler !== 'All') where.push(`ruler_status = ${literal(filters.ruler)}`);

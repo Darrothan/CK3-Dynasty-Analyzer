@@ -4,11 +4,12 @@ import * as duck from '@duckdb/duckdb-wasm/blocking';
 import { analyticalQuerySql, characterSkillsViewSql, characterViewSql, cohortSql, historicalPredicate, metricProjection, type CohortFilters, type HistoricalFilter } from './analytics';
 import { ageAtDeath, ageAtHistoricalDate, parseDate } from './dates';
 import { normalize, numericColumns } from './model';
+import { dashboardQueries, type DashboardSection } from './dashboard';
 
 const source = {
   date: '900.1.1',
   living: {
-    a: { first_name: 'Alice', birth: '850.1.1', dynasty_house: '2', female: 'yes', skill: ['1', '2', '3', '4', '5', '6'], traits: ['0', '0', '1'], family_data: { father: 'd', child: ['b', 'b'] } },
+    a: { first_name: 'Alice', birth: '850.1.1', dynasty_house: '2', female: 'yes', rite: '11', culture: '1', skill: ['1', '2', '3', '4', '5', '6'], traits: ['0', '0', '1'], family_data: { father: 'd', child: ['b', 'b'] } },
     b: { birth: '870.1.1', dynasty_house: '3', female: 'yes' },
     c: {},
     g: { birth: '900.2.1' },
@@ -20,6 +21,10 @@ const source = {
   },
   dynasties: { dynasty_house: { 2: { dynasty: '5', name: 'House Two' }, 3: { dynasty: '6', name: 'House Three' } }, dynasties: { 5: { name: 'Dynasty Five' }, 6: { name: 'Dynasty Six' } } },
   traits_lookup: ['brave', 'honest'],
+  culture_manager: { cultures: { 1: { name: 'French', heritage: 'heritage_frankish', language: 'language_french' } } },
+  rites: { database: { 11: { name: 'Rite Eleven', faith: '12', rite_type: 'rite_11', data: { color: { rgb: ['12', '34', '56'] } } } } },
+  faiths: { database: { 12: { name: 'Faith Twelve', religion: '13', tag: 'faith_12', color: { rgb: ['204', '204', '153'] } } } },
+  religion: { religions: { 13: { name: 'Religion Thirteen' } } },
   landed_titles: { landed_titles: { 1: { key: 'k_one', holder: 'a' }, 2: { key: 'd_two', holder: 'a' } } },
 };
 
@@ -32,7 +37,7 @@ describe('DuckDB historical and semantic integration', () => {
     await db.instantiate();
     connection = db.connect();
     const { tables } = normalize(source);
-    for (const name of ['characters', 'character_traits', 'houses', 'dynasties', 'titles', 'traits', 'relationships']) {
+    for (const name of ['characters', 'character_traits', 'houses', 'dynasties', 'titles', 'traits', 'relationships', 'religions', 'faiths', 'rites']) {
       const rows = tables[name];
       const columns = Object.keys(rows[0]);
       connection.query(`CREATE TABLE "${name}" (${columns.map(column => `"${column}" ${numericColumns.includes(column) ? 'DOUBLE' : 'VARCHAR'}`).join(', ')})`);
@@ -162,5 +167,62 @@ describe('DuckDB historical and semantic integration', () => {
     expect(Number(restDynasties?.dynasties)).toBe(1);
     expect(() => analyticalQuerySql({ filters, scope: 'world', grain: 'house', metricIds: ['population'] })).toThrow(/grain/);
     expect(() => analyticalQuerySql({ filters, scope: 'world', grain: 'character', metricIds: ['historical_age'] })).toThrow(/requires a date/);
+  });
+  it('executes every dashboard section and deduplicates trait prevalence and drilldown', () => {
+    const filters: CohortFilters = { dynastyId: '5', houseId: '', status: 'Both', sex: 'All' };
+    for (const section of ['overview', 'demographics', 'culture', 'traits', 'skills', 'houses'] as DashboardSection[]) {
+      const queries = dashboardQueries({ filters, section, drill: null });
+      for (const sql of Object.values(queries)) connection.query(sql);
+    }
+    const queries = dashboardQueries({ filters, section: 'traits', drill: { kind: 'trait', value: '0', label: 'brave' } });
+    expect(Number(connection.query(queries.trait).get(0)?.n)).toBe(1);
+    expect(Number(connection.query(queries.drill_count).get(0)?.n)).toBe(1);
+  });
+  it('applies age filters equally to dashboard cohorts and independent world comparisons', () => {
+    const filters: CohortFilters = { dynastyId: '5', houseId: '2', status: 'Both', sex: 'All', minAge: 50, maxAge: 60 };
+    const queries = dashboardQueries({ filters, section: 'skills', drill: null });
+    const cohorts = connection.query(queries.cohorts).toArray();
+    expect(cohorts.map(r => [r.cohort, Number(r.population)])).toEqual([['selected', 2], ['world', 2], ['rest', 0]]);
+    expect(() => dashboardQueries({ filters: { ...filters, minAge: 70 }, section: 'overview', drill: null })).toThrow(/Minimum age/);
+  });
+  it('reconstructs known living members and supports safe category drilldowns', () => {
+    const filters: CohortFilters = { dynastyId: '5', houseId: '', status: 'Both', sex: 'All' };
+    const history = dashboardQueries({ filters, section: 'demographics', drill: null });
+    const year850 = connection.query(history.history).toArray().find(row => Number(row.year) === 850);
+    expect(Number(year850?.n)).toBe(2);
+    expect(Number(year850?.unknown)).toBe(0);
+    const birth = dashboardQueries({ filters, section: 'demographics', drill: { kind: 'birth', value: '850', label: '850s' } });
+    expect(Number(connection.query(birth.drill_count).get(0)?.n)).toBe(1);
+    const house = dashboardQueries({ filters, section: 'houses', drill: { kind: 'house', value: "2' OR TRUE --", label: 'test' } });
+    expect(Number(connection.query(house.drill_count).get(0)?.n)).toBe(0);
+    expect(() => dashboardQueries({ filters, section: 'demographics', drill: { kind: 'birth', value: '850 OR TRUE', label: 'invalid' } })).toThrow(/Invalid decade/);
+  });
+  it('resolves religion hierarchy IDs and counts each character once at each level', () => {
+    const filters: CohortFilters = { dynastyId: '5', houseId: '', status: 'Both', sex: 'All' };
+    const queries = dashboardQueries({ filters, section: 'culture', drill: { kind: 'faith', value: '12', label: 'Faith Twelve' } });
+    const hierarchy = connection.query(queries.hierarchy).toArray();
+    const rite = hierarchy.find(r => Number(r.level) === 3 && r.rite_id === '11');
+    expect([rite?.religion_id, rite?.faith_id, rite?.religion, rite?.faith, rite?.rite, Number(rite?.n)]).toEqual(['13', '12', 'Religion Thirteen', 'Faith Twelve', 'Rite Eleven', 1]);
+    expect([rite?.rite_key, rite?.color]).toEqual(['rite_11', '#0c2238']);
+    expect(hierarchy.find(r => Number(r.level) === 2 && r.faith_id === '12')?.color).toBe('#cccc99');
+    expect(Number(connection.query(queries.drill_count).get(0)?.n)).toBe(1);
+    const secondPage = dashboardQueries({ filters, section: 'culture', drill: { kind: 'faith', value: '12', label: 'Faith Twelve' }, page: 1 });
+    expect(connection.query(secondPage.drill).numRows).toBe(0);
+    const differentHouse = dashboardQueries({ filters, section: 'culture', drill: { kind: 'faith', value: '12', label: 'Faith Twelve', houseId: '3' } });
+    expect(Number(connection.query(differentHouse.drill_count).get(0)?.n)).toBe(0);
+    const livingHouse = dashboardQueries({ filters, section: 'houses', drill: { kind: 'house', value: '2', label: 'House Two · Living', status: 'Living' } });
+    expect(Number(connection.query(livingHouse.drill_count).get(0)?.n)).toBe(1);
+    const rulingHouse = dashboardQueries({ filters, section: 'houses', drill: { kind: 'house', value: '2', label: 'House Two · rulers', ruler: 'Ruler' } });
+    expect(Number(connection.query(rulingHouse.drill_count).get(0)?.n)).toBe(1);
+    const skill = dashboardQueries({ filters, section: 'skills', drill: { kind: 'skill', skill: 'diplomacy', value: '1', label: 'Diplomacy 1' } });
+    expect(Number(connection.query(skill.drill_count).get(0)?.n)).toBe(1);
+    expect(() => dashboardQueries({ filters, section: 'skills', drill: { kind: 'skill', skill: 'id', value: '1', label: 'invalid' } })).toThrow(/Invalid skill/);
+    for (const pillar of ['heritage', 'language'] as const) {
+      const hierarchy = connection.query(queries[`${pillar}_hierarchy`]).toArray();
+      expect(hierarchy.filter(r => Number(r.level) === 1).reduce((sum, r) => sum + Number(r.n), 0)).toBe(2);
+      expect(hierarchy.find(r => Number(r.level) === 2 && r.culture_id === '1')?.parent_id).toBe(pillar === 'heritage' ? 'heritage_frankish' : 'language_french');
+      const drill = dashboardQueries({ filters, section: 'culture', drill: { kind: pillar, value: pillar === 'heritage' ? 'heritage_frankish' : 'language_french', label: pillar } });
+      expect(Number(connection.query(drill.drill_count).get(0)?.n)).toBe(1);
+    }
   });
 });

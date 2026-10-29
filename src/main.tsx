@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { numericColumns, percentage, type Row } from './model';
 import { historicalPredicate, type CohortSex, type CohortStatus, type HistoricalFilter, type RulerFilter } from './analytics';
 import { normalizeSearch } from './localization';
+import { DynastyDashboard } from './DynastyDashboard';
+import { selectedGameFiles } from './gameData';
 import './style.css';
 
 type TableInfo = Record<string, { count: number; columns: string[] }>;
@@ -62,6 +64,7 @@ function App() {
   const queryId = useRef(0);
   const cohortId = useRef(0);
   const directory = useRef<DirHandle | null>(null);
+  const openedFile = useRef<File | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [localizationFiles, setLocalizationFiles] = useState<File[]>([]);
   const [stage, setStage] = useState('');
@@ -120,7 +123,8 @@ function App() {
   }, [dynasties, dynasty, dynastySearch]);
 
   useEffect(() => () => worker.current?.terminate(), []);
-  function start(file: File) {
+  function start(file: File, selectedFiles = localizationFiles) {
+    openedFile.current = file;
     worker.current?.terminate();
     setTables({}); setRows([]); setChart([]); setDynasties([]); setHouses([]); setCohorts([]); setHouse(''); setHistorical(null); setDate(null); setWarnings([]);
     setError(''); setRaw(''); setInspector(null); setSearch(''); setDynasty(''); setPage(0);
@@ -148,7 +152,7 @@ function App() {
       if (data.type === 'error' && (data.requestId == null || data.requestId === queryId.current || data.requestId === cohortId.current)) { setError(data.message); setStage(''); }
     };
     w.onerror = event => { setError(`Worker failed: ${event.message}. The save may be too large for this browser.`); setStage(''); };
-    w.postMessage({ type: 'import', file, localizationFiles });
+    w.postMessage({ type: 'import', file, localizationFiles: selectedFiles.map(item => ({ file: item, path: item.webkitRelativePath || item.name })) });
   }
   useEffect(() => {
     if (!tables[dataset]) return;
@@ -212,8 +216,14 @@ function App() {
       <div className="sidebar-bottom"><span>◉ All data stays on this device</span><button onClick={() => setDark(!dark)}>{dark ? '☼ Light mode' : '☾ Dark mode'}</button></div>
     </aside>
     <main>
-      <header><div><div className="eyebrow">YOUR LOCAL ANALYTICS WORKSPACE</div><h1>{ready ? tab : 'Explore your legacy'}</h1><p>{ready ? 'Inspect your save, one story at a time.' : 'Turn your Crusader Kings III save into an explorable dataset.'}</p></div><div className="actions"><button onClick={chooseDirectory}>Local directory</button><label className="button">Localization folder<input type="file" multiple {...{ webkitdirectory: '' }} onChange={e => setLocalizationFiles(Array.from(e.target.files ?? []))} /></label><label className="button primary">Open save<input type="file" onChange={e => { if (e.target.files?.[0]) start(e.target.files[0]); e.target.value = ''; }} /></label></div></header>
-      <p className="muted">Optional localization: {localizationFiles.length ? `${localizationFiles.length.toLocaleString()} files selected for the next save import` : 'none selected; source keys remain visible'}. Files stay on this device.</p>
+      <header><div><div className="eyebrow">YOUR LOCAL ANALYTICS WORKSPACE</div><h1>{ready ? tab : 'Explore your legacy'}</h1><p>{ready ? 'Inspect your save, one story at a time.' : 'Turn your Crusader Kings III save into an explorable dataset.'}</p></div><div className="actions"><button onClick={chooseDirectory}>Local directory</button><label className="button">Game or localization folder<input type="file" multiple {...{ webkitdirectory: '' }} onChange={e => {
+        const files = selectedGameFiles(Array.from(e.target.files ?? []));
+        e.target.value = '';
+        if (!files.length) { setError('No English localization or dynasty definition files found. Select the CK3 game folder or its English localization folder.'); return; }
+        setLocalizationFiles(files);
+        if (openedFile.current) start(openedFile.current, files);
+      }} /></label><label className="button primary">Open save<input type="file" onChange={e => { if (e.target.files?.[0]) start(e.target.files[0]); e.target.value = ''; }} /></label></div></header>
+      <p className="muted">Optional game data: {localizationFiles.length ? `${localizationFiles.length.toLocaleString()} relevant files selected` : 'none selected; source keys remain visible'}. Choose the CK3 game folder for house definitions and English names. Selecting a folder reloads the open save. Files stay on this device.</p>
       {error && <div role="alert" className="alert">{error}<button onClick={() => setError('')}>Dismiss</button></div>}
       {stage && <div className="progress"><span className="spinner" /> {stage} <button onClick={() => { worker.current?.terminate(); worker.current = null; setTables({}); setRows([]); setChart([]); setStage(''); setError('Operation cancelled and the in-memory session closed. Select a file to start again.'); }}>Cancel</button></div>}
       {!ready && !stage && <section className={`drop ${drag ? 'drag' : ''}`} onDragOver={e => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={e => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files[0]) start(e.dataTransfer.files[0]); }}>
@@ -226,7 +236,8 @@ function App() {
       {ready && <>
         {warnings.length > 0 && <div className="notice">{warnings.slice(0, 3).join(' ')} {warnings.length > 3 && `(${warnings.length} warnings total)`}</div>}
         {tab === 'Overview' && <><div className="metrics"><div><small>SAVE DATE</small><strong>{date ?? 'Unknown'}</strong></div><div><small>LIVING CHARACTERS</small><strong>{living.toLocaleString()}</strong></div><div><small>DYNASTIES</small><strong>{tables.dynasties.count.toLocaleString()}</strong></div><div><small>HOUSES</small><strong>{tables.houses.count.toLocaleString()}</strong></div></div><section className="card"><div className="section-head"><div><h2>Your save is ready</h2><p>{tables.characters.count.toLocaleString()} parsed characters, including {(tables.characters.count - living).toLocaleString()} deceased. Explore {Object.keys(tables).length} datasets; names may be localization keys.</p></div><button onClick={() => { changeDataset('characters'); setDimension('house'); setTab('Dynasty explorer'); }}>Explore dynasties →</button></div><h3>Dataset coverage</h3><div className="dataset-grid">{Object.entries(tables).map(([name, info]) => <button key={name} onClick={() => { changeDataset(name); setTab('Data tables'); }}><b>{name.replaceAll('_', ' ')}</b><span>{info.count.toLocaleString()} records →</span></button>)}</div></section></>}
-        {(tab === 'Dynasty explorer' || tab === 'Chart builder' || tab === 'Data tables') && <>
+        {worker.current && <div hidden={tab !== 'Dynasty explorer'}><DynastyDashboard worker={worker.current} dynasties={dynasties} houses={houses} onCharacter={id => worker.current?.postMessage({ type: 'character', id })} onTitle={id => openRecord('titles', id)} /></div>}
+        {(tab === 'Dynasty explorer' || tab === 'Chart builder' || tab === 'Data tables') && !['Dynasty explorer'].includes(tab) && <>
           <section className="card controls">
             {tab === 'Dynasty explorer' ? <><label>Find dynasty or house <input value={dynastySearch} onChange={e => setDynastySearch(e.target.value)} placeholder="ID, dynasty or house name" /></label><label>Dynasty <select value={dynasty} onChange={e => { setDynasty(e.target.value); setHouse(''); setDataset('characters'); setPage(0); }}><option value="">All dynasties</option>{dynastyOptions.shown.map(d => <option value={d.id} key={d.id}>{d.name || 'Dynasty'} [#{d.id}]{d.house ? ` · house ${d.house}` : ''} ({d.count})</option>)}</select></label><p>{dynastyOptions.count > 200 && `${dynastyOptions.count.toLocaleString()} matches; showing first 200. Refine the search. `}{selectedDynasty ? `${selectedDynasty.count.toLocaleString()} known members: ${selectedDynasty.living.toLocaleString()} living, ${(selectedDynasty.count - selectedDynasty.living).toLocaleString()} deceased, before filters` : 'Select a dynasty for the cohort overview.'}</p></> : <label>Dataset <select value={dataset} onChange={e => changeDataset(e.target.value)}>{Object.keys(tables).map(name => <option key={name}>{name}</option>)}</select></label>}
             {dataset === 'characters' && <label className="check"><input type="checkbox" checked={includeDead} onChange={e => { setIncludeDead(e.target.checked); setPage(0); }} /> Include deceased</label>}

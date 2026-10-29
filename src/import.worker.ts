@@ -1,9 +1,11 @@
 import { Jomini } from 'jomini';
 import { extractGamestate } from './import';
 import { normalize, type Snapshot } from './model';
-import { createDatabase, exportTable, queryAnalytics, queryCohorts, queryTable } from './database';
+import { createDatabase, exportTable, queryAnalytics, queryCohorts, queryDashboard, queryTable } from './database';
 import { createLocalization, type LocalizationFile } from './localization';
 import { metrics, type AnalyticalQuery, type CohortFilters } from './analytics';
+import type { DashboardRequest } from './dashboard';
+import { addDefinitions, emptyDefinitions, selectedGameFiles } from './gameData';
 
 let bytes: Uint8Array | null = null;
 let snapshot: Snapshot | null = null;
@@ -17,9 +19,10 @@ self.onmessage = async (event: MessageEvent<{
   kind?: string;
   categoryFilter?: { column: string; value: string; isMissing: boolean } | null;
   selectedColumns?: string[];
-  localizationFiles?: File[];
+  localizationFiles?: { file: File; path: string }[];
   cohort?: CohortFilters;
   analytics?: AnalyticalQuery;
+  dashboard?: DashboardRequest;
 }>) => {
   try {
     const parser = await Jomini.initialize();
@@ -27,14 +30,21 @@ self.onmessage = async (event: MessageEvent<{
       post('Reading file');
       if (event.data.file.size > 512 * 1024 * 1024) throw new Error('The file exceeds the 512 MiB import limit.');
       const input = new Uint8Array(await event.data.file.arrayBuffer());
-      const files = event.data.localizationFiles ?? [];
-      if (files.reduce((sum, file) => sum + file.size, 0) > 128 * 1024 * 1024) throw new Error('Localization files exceed the 128 MiB import limit.');
+      const selected = event.data.localizationFiles ?? [];
+      const files = selectedGameFiles(selected.map(entry => ({ ...entry, name: entry.file.name, webkitRelativePath: entry.path })));
+      if (files.reduce((sum, entry) => sum + entry.file.size, 0) > 128 * 1024 * 1024) throw new Error('Relevant game data files exceed the 128 MiB import limit.');
       const localizationFiles: LocalizationFile[] = [];
-      if (files.length) post('Reading optional local localization files');
-      for (const file of files) {
-        if (!/\.ya?ml$/i.test(file.name)) continue;
-        const content = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
-        localizationFiles.push({ path: file.webkitRelativePath || file.name, content });
+      const definitions = emptyDefinitions();
+      if (files.length) post('Reading optional local game data');
+      for (const entry of files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)) {
+        const path = entry.path;
+        const content = new Uint8Array(await entry.file.arrayBuffer());
+        if (/\.ya?ml$/i.test(entry.file.name)) {
+          localizationFiles.push({ path, content: new TextDecoder('utf-8', { fatal: true }).decode(content) });
+        } else {
+          try { addDefinitions(definitions, path, parser.parseText(content, { typeNarrowing: 'none' })); }
+          catch (error) { throw new Error(`Unable to parse game definition ${path}: ${error instanceof Error ? error.message : String(error)}`); }
+        }
       }
       const localization = createLocalization(localizationFiles);
       post('Extracting gamestate');
@@ -45,7 +55,7 @@ self.onmessage = async (event: MessageEvent<{
         const data: Record<string, unknown> = {};
         for (const name of ['date', 'meta_data', 'living', 'dead_unprunable', 'dynasties', 'culture_manager', 'traits_lookup', 'faiths', 'rites', 'religion']) data[name] = query.at(`/${name}`);
         data.landed_titles = { landed_titles: query.at('/landed_titles/landed_titles') };
-        return normalize(data, localization);
+        return normalize(data, localization, definitions);
       });
       if (files.length && !localization.entries) snapshot.warnings.push('No CK3 localization entries were found in the selected files.');
       if (localization.collisions) snapshot.warnings.push(`Localization: ${localization.collisions} conflicting definitions; later sorted file/line wins.`);
@@ -72,6 +82,9 @@ self.onmessage = async (event: MessageEvent<{
       const living = snapshot.tables.characters.filter(row => row.status === 'Living').length;
       const houses = snapshot.tables.houses.map(h => ({ id: String(h.id), dynastyId: h.dynasty_id == null ? '' : String(h.dynasty_id), name: String(h.name ?? `House ${h.id}`) }));
       self.postMessage({ type: 'ready', date: snapshot.date, warnings: snapshot.warnings, tables, dynasties, houses, living });
+    } else if (event.data.type === 'dashboard' && database && event.data.dashboard) {
+      const results = await queryDashboard(database.connection, event.data.dashboard);
+      self.postMessage({ type: 'dashboard', requestId: event.data.requestId, results });
     } else if (event.data.type === 'cohorts' && database && event.data.cohort) {
       const cohorts = await queryCohorts(database.connection, event.data.cohort);
       self.postMessage({ type: 'cohorts', requestId: event.data.requestId, cohorts });

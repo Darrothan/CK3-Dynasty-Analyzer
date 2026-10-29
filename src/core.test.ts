@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
 import { Jomini } from 'jomini';
 import { extractGamestate } from './import';
-import { ageAt, normalize, percentage } from './model';
+import { ageAt, normalize, percentage, savedRgb } from './model';
 import { createLocalization, normalizeSearch } from './localization';
 import { cohortSql } from './analytics';
+import { addDefinitions, emptyDefinitions, selectedGameFiles } from './gameData';
 
 const fixture = `date=867.1.1
 meta_data={ version="1.20" ironman=no }
@@ -100,6 +101,45 @@ describe('Jomini and normalized data', () => {
 });
 
 describe('localization and cohorts', () => {
+  it('selects only English and relevant definitions from a full game directory', () => {
+    const files = ['game/localization/english/religion/a.yml', 'game/localization/french/a.yml', 'game/common/dynasty_houses/a.txt', 'game/common/dynasties/b.txt', 'game/common/culture/cultures/a.txt', 'game/gfx/a.dds'].map(path => ({ name: path.split('/').pop()!, webkitRelativePath: path }));
+    expect(selectedGameFiles(files).map(f => f.webkitRelativePath)).toEqual([files[0].webkitRelativePath, files[2].webkitRelativePath, files[3].webkitRelativePath]);
+    expect(selectedGameFiles([{ name: 'names.yml', webkitRelativePath: 'english/dynasties/names.yml' }])).toHaveLength(1);
+  });
+  it('resolves founding and branch house templates and recorded culture pillars', () => {
+    const definitions = emptyDefinitions();
+    addDefinitions(definitions, 'game/common/dynasty_houses/houses.txt', { house_branch: { name: 'dynn_Branch', prefix: 'dynnp_de' } });
+    addDefinitions(definitions, 'game/common/dynasty_houses/numbered.txt', { 12319: { name: 'dynn_Branch' } });
+    addDefinitions(definitions, 'game/common/dynasties/dynasties.txt', { 25061: { name: 'dynn_Karling' } });
+    const loc = createLocalization([{ path: 'a.yml', content: 'l_english:\n dynn_Karling: "Karling"\n dynn_Branch: "Branch"\n dynnp_de: "de "\n heritage_frankish_name: "Frankish heritage"\n language_frankish_name: "Frankish language"\n christianity_religion: "Christianity"\n' }]);
+    const source = {
+      date: '867.1.1', living: { a: { first_name: 'A', birth: '850.1.1', dynasty_house: '9', culture: '4' } },
+      dynasties: { dynasty_house: { 5: { name: 'dynn_Karling', dynasty: '5' }, 9: { key: 'house_branch', dynasty: '5' }, 10: { key: 'house_unknown', dynasty: '5' }, 11: { key: '12319', dynasty: '5' }, 12: { key: '99999999', dynasty: '5' } }, dynasties: { 5: { key: '25061' } } },
+      culture_manager: { cultures: { 4: { name: 'frankish', heritage: 'heritage_frankish', language: 'language_frankish' } } },
+      religion: { religions: { 1: { tag: 'christianity_religion' } } },
+    };
+    const snapshot = normalize(source, loc, definitions);
+    expect(snapshot.tables.dynasties[0].name).toBe('Karling');
+    expect(snapshot.tables.houses.map(h => h.name)).toEqual(['Karling', 'de Branch', 'house_unknown', 'Branch', '99999999']);
+    expect(snapshot.tables.characters[0]).toMatchObject({ dynasty: 'Karling', house: 'de Branch', heritage_key: 'heritage_frankish', heritage: 'Frankish heritage', language: 'Frankish language' });
+    expect(snapshot.tables.religions[0].name).toBe('Christianity');
+    expect(normalize(source).tables.houses[1].name).toBe('house_branch');
+  });
+  it('uses the game definition for a founding house without borrowing names for unresolved branches', () => {
+    const definitions = emptyDefinitions();
+    addDefinitions(definitions, 'game/common/dynasties/a.txt', { 25061: { name: 'dynn_Karling', prefix: 'dynnp_de' } });
+    const loc = createLocalization([{ path: 'a.yml', content: 'l_english:\n dynn_Karling: "Karling"\n dynnp_de: "de "\n' }]);
+    const snapshot = normalize({ dynasties: { dynasty_house: { 5: { key: '25061', dynasty: '5' }, 6: { key: '123456', dynasty: '5' } }, dynasties: { 5: { key: '25061' } } } }, loc, definitions);
+    expect(snapshot.tables.dynasties[0].name).toBe('de Karling');
+    expect(snapshot.tables.houses.map(h => h.name)).toEqual(['de Karling', '123456']);
+  });
+  it('accepts valid save RGB values and does not invent malformed colors', () => {
+    expect(savedRgb({ rgb: ['204', '204', '153'] })).toBe('#cccc99');
+    expect(savedRgb({ rgb: ['0', '15', '255'] })).toBe('#000fff');
+    expect(savedRgb({ rgb: ['256', '0', '0'] })).toBeNull();
+    expect(savedRgb({ rgb: ['1', '2'] })).toBeNull();
+    expect(savedRgb({ hsv: ['1', '2', '3'] })).toBeNull();
+  });
   it('uses sorted file precedence, references, markup, UTF-8, and safe fallbacks', () => {
     const localization = createLocalization([
       { path: 'b.yml', content: 'l_english:\n name:1 "$prefix$Émile"\n prefix:0 "de "\n dynamic:0 "[Character.GetName]"\n cycle:0 "$cycle$"\n' },

@@ -20,11 +20,16 @@ See [DEVELOPER.md](DEVELOPER.md) for schema, source paths, query API, denominato
 - Add more analytical operations, dimensions, non-character-centered cohort definitions, reusable time-series helpers and multi-save identity/provenance where needed.
 - Extend family, title, government and realm extraction and add richer diagnostics and performance testing.
 
-## Milestone 2 — Dynasty BI
+## Milestone 2 — Dynasty BI — COMPLETE
 
-- [ ] Unify persistent composable dashboard filters and drilldowns, retaining unknown states and reset.
-- [ ] Build curated overview, demographics, culture/faith/rite, houses, traits and skills; add political power and hall of fame where evidence supports them.
-- [ ] Add independently defined age/house/world comparisons and distributions with clear missing counts and denominators.
+- [x] Add shared dashboard filters, reset and paginated character drilldowns, retaining unknown ruler and historical eligibility.
+- [x] Add overview, demographics, culture/faith/rite hierarchy, houses, recorded titles, traits and stored-skill comparisons. No trait categories are inferred without reliable source metadata.
+- [x] Compare selected and independently filtered world skill values and house skills using per-skill known-value denominators; reconstruct a bounded, explicitly incomplete historical population series.
+- [x] Automated DuckDB and UI interaction tests, real-save/localization integration tests, production build and browser verification with the supplied gamestate.
+- [x] Follow-up: resolve founding and cadet house names using selected game definitions, expose recorded culture heritage/language, improve comparative charts and keep dashboard content in place during filter updates.
+- [x] Follow-up: resolve religion types and numeric house templates against selected game data; reload an open save when that selection changes; use stable religion colors and recorded faith/rite colors.
+
+Further work is backlog, not a Milestone 2 blocker: extend localization and trait categorization when reliable metadata is available; improve ruler evidence; expand historical coverage, chart accessibility and result pagination beyond current limits; and broaden browser/save-version performance testing.
 
 ## Later milestones
 

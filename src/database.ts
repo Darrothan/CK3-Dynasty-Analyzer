@@ -2,8 +2,9 @@ import * as duckdb from '@duckdb/duckdb-wasm';
 import { Float64, Table, Utf8, vectorFromArray, type Vector } from 'apache-arrow';
 import workerUrl from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
 import wasmUrl from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
-import { numericColumns, type Tables } from './model';
+import { numericColumns, type Row, type Tables } from './model';
 import { analyticalQuerySql, characterSkillsViewSql, characterViewSql, cohortSql, type AnalyticalQuery, type CohortFilters } from './analytics';
+import { dashboardQueries, type DashboardRequest } from './dashboard';
 
 const identifier = (name: string) => `"${name.replaceAll('"', '""')}"`;
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
@@ -36,9 +37,12 @@ export async function createDatabase(tables: Tables, onTable: (name: string) => 
   const emptySchemas: Record<string, string> = {
     houses: 'id VARCHAR, name VARCHAR, dynasty_id VARCHAR',
     dynasties: 'id VARCHAR, name VARCHAR',
-    titles: 'id VARCHAR, name VARCHAR, holder_id VARCHAR',
+    titles: 'id VARCHAR, name VARCHAR, key VARCHAR, holder_id VARCHAR',
     traits: 'id VARCHAR, name VARCHAR',
-    character_traits: 'character_id VARCHAR, trait_id VARCHAR',
+    character_traits: 'character_id VARCHAR, trait_id VARCHAR, trait VARCHAR',
+    religions: 'id VARCHAR, name VARCHAR, tag VARCHAR',
+    faiths: 'id VARCHAR, color VARCHAR, tag VARCHAR',
+    rites: 'id VARCHAR, color VARCHAR, key VARCHAR',
     relationships: 'character_id VARCHAR, relative_id VARCHAR, relation VARCHAR',
   };
   for (const [name, rows] of Object.entries(tables)) {
@@ -63,6 +67,19 @@ export async function createDatabase(tables: Tables, onTable: (name: string) => 
     await connection.query(characterSkillsViewSql);
   }
   return { db, connection };
+}
+
+export async function queryDashboard(connection: duckdb.AsyncDuckDBConnection, request: DashboardRequest) {
+  const results: Record<string, Row[]> = {};
+  for (const [name, sql] of Object.entries(dashboardQueries(request))) {
+    const result = await connection.query(sql);
+    results[name] = result.toArray().map(row => Object.fromEntries(Object.entries(row.toJSON()).map(([key, value]) => {
+      if (typeof value === 'bigint') return [key, Number.isSafeInteger(Number(value)) ? Number(value) : value.toString()];
+      if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return [key, value ?? null];
+      throw new Error(`Unsupported dashboard result value in ${key}.`);
+    })));
+  }
+  return results;
 }
 
 export async function queryAnalytics(connection: duckdb.AsyncDuckDBConnection, query: AnalyticalQuery) {

@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import { extractGamestate } from './import';
 import { normalize, type Row } from './model';
 import { createLocalization } from './localization';
 import { analyticalQuerySql, type CohortFilters } from './analytics';
+import { addDefinitions, emptyDefinitions } from './gameData';
 
 const path = process.env.CK3_INTEGRATION_SAVE;
 describe.skipIf(!path)('local real-save integration', () => {
@@ -93,6 +94,47 @@ describe.skipIf(!path)('local real-save integration', () => {
 });
 
 const localizationPath = process.env.CK3_LOCALIZATION_DIR;
+const gamePath = process.env.CK3_GAME_DIR;
+describe.skipIf(!gamePath || !path)('local game definitions with real save', () => {
+  it('resolves founding and cadet houses, religion and culture pillars', async () => {
+    const parser = await Jomini.initialize();
+    const definitions = emptyDefinitions();
+    for (const folder of ['dynasties', 'dynasty_houses']) {
+      const directory = join(gamePath!, 'common', folder);
+      for (const file of (await readdir(directory)).filter(name => name.endsWith('.txt')).sort()) {
+        addDefinitions(definitions, `common/${folder}/${file}`, parser.parseText(await readFile(join(directory, file)), { typeNarrowing: 'none' }));
+      }
+    }
+    const root = join(gamePath!, 'localization', 'english');
+    async function localizationFiles(folder: string, relative: string): Promise<{ path: string; content: string }[]> {
+      const entries = await readdir(folder, { withFileTypes: true });
+      const files = await Promise.all(entries.map(async entry => {
+        const path = join(folder, entry.name), key = `${relative}/${entry.name}`;
+        if (entry.isDirectory()) return localizationFiles(path, key);
+        if (!/\.ya?ml$/i.test(entry.name)) return [];
+        return [{ path: key, content: new TextDecoder('utf-8', { fatal: true }).decode(await readFile(path)) }];
+      }));
+      return files.flat();
+    }
+    const loc = createLocalization(await localizationFiles(root, 'english'));
+    const result = parser.parseText(extractGamestate(await readFile(path!)), { typeNarrowing: 'none' }, query => {
+      const source: Record<string, unknown> = {};
+      for (const key of ['date', 'living', 'dead_unprunable', 'dynasties', 'culture_manager', 'faiths', 'rites', 'religion']) source[key] = query.at(`/${key}`);
+      return normalize(source, loc, definitions);
+    });
+    const branch = result.tables.houses.find(h => h.key === 'house_jerome_karling');
+    expect(branch?.name).toBe('Jerome-Karling');
+    expect(result.tables.dynasties.find(d => d.id === branch?.dynasty_id)?.name).toBe('Karling');
+    expect(result.tables.religions.find(r => r.tag === 'christianity_religion')?.name).toBe('Christianity');
+    expect(result.tables.religions.find(r => r.tag === 'zoroastrianism_religion')?.name).toBe('Zoroastrianism');
+    const numbered = result.tables.houses.find(h => h.key === '12319');
+    expect(numbered?.name).toBe(loc.lookup('dynn_Kalyani_Chalukya'));
+    expect(numbered?.name).not.toBe('12319');
+    expect(result.tables.faiths.find(f => f.tag === 'catholic')?.color).toBe('#cccc99');
+    expect(result.tables.rites.find(r => r.key === 'roman_rite')?.color).toBe('#cccc99');
+    expect(result.tables.cultures.find(c => c.key === 'frankish')).toMatchObject({ heritage_key: 'heritage_frankish', heritage: 'Frankish', language_key: 'language_frankish', language: 'Frankish' });
+  }, 120000);
+});
 describe.skipIf(!localizationPath)('local game localization integration', () => {
   it('resolves representative entity names without bundling game files', async () => {
     const paths = [['dynasties', 'dynasty_names_l_english.yml'], ['culture', 'cultures_l_english.yml'], ['religion', 'religion_paganism_l_english.yml'], ['religion', 'rites_l_english.yml'], ['traits_l_english.yml'], ['titles_l_english.yml']];
