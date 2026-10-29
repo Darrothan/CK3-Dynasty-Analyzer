@@ -1,0 +1,13 @@
+date=867.1.1
+traits_lookup={ first second third }
+living={
+36959={
+ first_name="GuillE_n" birth=831.7.26 culture=81 dynasty_house=2
+ skill={ 10 4 6 9 6 1 } traits={ 1 1 2 }
+ alive_data={ fertility=0.55707 health=4.01756 }
+ family_data={ spouse=9 spouse=10 child={ 11 12 } }
+}
+7={ first_name="Synthetic" birth=830.1.1 dynasty_house=2 traits={ 1 } }
+}
+dynasties={ dynasty_house={ 2={ name="Maison é" dynasty=5 } } dynasties={ 5={ key=example } } }
+culture_manager={ cultures={ 81={ culture_template=iberian } } }

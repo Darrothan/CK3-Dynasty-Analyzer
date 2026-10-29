@@ -2,3 +2,15 @@
 *.ck3
 gamestate
 example_saves/
+node_modules/
+dist/
+*.tsbuildinfo
+.env*
+*.ck3.*
+*.save
+*.sav
+*.zip
+*.7z
+*.rar
+private-fixtures/
+local-game-data/
