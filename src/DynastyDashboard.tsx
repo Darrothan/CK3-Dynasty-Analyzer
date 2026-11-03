@@ -4,6 +4,7 @@ import type { DashboardDrill, DashboardSection, DrillKind } from './dashboard';
 import { normalizeSearch } from './localization';
 import { skillNames, type Row } from './model';
 import { chartColor, CultureSunburst, GroupedBars, HistoricalPopulation, ReligionSunburst } from './DashboardCharts';
+import { GenealogyViewer } from './GenealogyViewer';
 
 type Dynasty = { id: string; name: string; count: number; house: string; houseSearch: string };
 type House = { id: string; dynastyId: string; name: string };
@@ -24,7 +25,7 @@ function Breakdown({ title, rows, kind, onDrill }: { title: string; rows: Row[];
 export function DynastyDashboard({ worker, dynasties, houses, onCharacter, onTitle }: { worker: Worker; dynasties: Dynasty[]; houses: House[]; onCharacter: (id: string) => void; onTitle: (id: string) => void }) {
   const [search, setSearch] = useState('');
   const [filters, setFilters] = useState<CohortFilters>(() => initial(''));
-  const [section, setSection] = useState<DashboardSection>('overview');
+  const [section, setSection] = useState<DashboardSection | 'genealogy'>('overview');
   const [mode, setMode] = useState<HistoricalFilter['mode']>('alive_on');
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
@@ -37,7 +38,7 @@ export function DynastyDashboard({ worker, dynasties, houses, onCharacter, onTit
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const requestId = useRef(0);
-  const requestSection = useRef<DashboardSection>(section);
+  const requestSection = useRef<DashboardSection>('overview');
   const options = useMemo(() => {
     const term = normalizeSearch(search);
     const matches = dynasties.filter(d => normalizeSearch(`${d.name} ${d.houseSearch} ${d.id}`).includes(term));
@@ -57,6 +58,7 @@ export function DynastyDashboard({ worker, dynasties, houses, onCharacter, onTit
   }, [worker]);
   useEffect(() => {
     requestId.current = --nextDashboardRequestId;
+    if (section === 'genealogy') { setLoading(false); return; }
     if (!filters.dynastyId) { setResults(null); setLoading(false); return; }
     requestSection.current = section;
     setLoading(true);
@@ -98,9 +100,10 @@ export function DynastyDashboard({ worker, dynasties, houses, onCharacter, onTit
     </section>
     {error && <div role="alert" className="alert">{error}</div>}
     {!filters.dynastyId ? <section className="card"><h2>Choose a dynasty</h2><p>Search by dynasty or house name to explore its retained members.</p></section> : <>
-      <div className="dashboard-tabs">{sections.map(s => <button key={s} className={section === s ? 'active' : ''} onClick={() => { setSection(s); setDrill(null); }}>{s === 'culture' ? 'Culture & faith' : s}</button>)}</div>
-      <div className="dashboard-update" role="status">{loading ? 'Updating dashboard…' : '\u00a0'}</div>
-      {!results && !error && <p>Calculating dashboard…</p>}
+      <div className="dashboard-tabs">{[...sections, 'genealogy' as const].map(s => <button key={s} className={section === s ? 'active' : ''} onClick={() => { setSection(s); setDrill(null); }}>{s === 'culture' ? 'Culture & faith' : s}</button>)}</div>
+      {section === 'genealogy' && <GenealogyViewer key={filters.dynastyId} worker={worker} dynastyId={filters.dynastyId} houses={houses} />}
+      {section !== 'genealogy' && <div className="dashboard-update" role="status">{loading ? 'Updating dashboard…' : '\u00a0'}</div>}
+      {section !== 'genealogy' && !results && !error && <p>Calculating dashboard…</p>}
       {results && resultSection === section && <div className={loading || error ? 'dashboard-pending' : ''} aria-busy={loading}><p className="cohort-note"><b>{display(active?.population ?? 0)} characters</b> in the active cohort{filters.historical ? `; ${display(active?.historical_unknown ?? 0)} with unknown historical eligibility excluded` : ''}. These are retained save records, not a complete historical population.</p>
         {section === 'overview' && <><div className="metrics dashboard-metrics">{[['Population', row?.population], ['Living', row?.living], ['Deceased', row?.deceased], ['Houses', row?.houses], ['Recorded rulers', row?.rulers], ['Ruler unknown', row?.ruler_unknown]].map(([label, value]) => <div key={String(label)}><small>{label}</small><strong>{display(value ?? null)}</strong></div>)}</div>{chart('houses', 'Members by house', 'house')}</>}
         {section === 'demographics' && <><p>Birth dates unavailable or unreliable: {display(results.date_quality?.[0]?.missing_birth)}; deceased members with unavailable or unreliable death dates: {display(results.date_quality?.[0]?.missing_death)}. These dates are excluded from decade charts.</p><div className="dashboard-grid">{chart('age', 'Age distribution', 'age')}{chart('sex', 'Sex distribution', 'sex')}{chart('birth', 'Recorded births by decade', 'birth')}{chart('death', 'Recorded deaths by decade', 'death')}</div><HistoricalPopulation rows={results.history ?? []} /><section className="card"><h2>Recorded lifespan</h2><p>Deceased characters with valid ages: {display(results.lifespan?.[0]?.known)} · Mean {display(results.lifespan?.[0]?.mean)} · Median {display(results.lifespan?.[0]?.median)} years. Missing or inconsistent dates are excluded.</p></section></>}

@@ -6,10 +6,12 @@ import { createLocalization, type LocalizationFile } from './localization';
 import { metrics, type AnalyticalQuery, type CohortFilters } from './analytics';
 import type { DashboardRequest } from './dashboard';
 import { addDefinitions, emptyDefinitions, selectedGameFiles } from './gameData';
+import { GenealogyGraph, type GraphRequest } from './genealogy';
 
 let bytes: Uint8Array | null = null;
 let snapshot: Snapshot | null = null;
 let database: Awaited<ReturnType<typeof createDatabase>> | null = null;
+let genealogy: GenealogyGraph | null = null;
 const post = (stage: string) => self.postMessage({ type: 'stage', stage });
 self.onmessage = async (event: MessageEvent<{
   type: string; file?: File; path?: string; dataset?: string; search?: string;
@@ -23,6 +25,9 @@ self.onmessage = async (event: MessageEvent<{
   cohort?: CohortFilters;
   analytics?: AnalyticalQuery;
   dashboard?: DashboardRequest;
+  graph?: GraphRequest;
+  target?: string;
+  includeMarriage?: boolean;
 }>) => {
   try {
     const parser = await Jomini.initialize();
@@ -60,6 +65,8 @@ self.onmessage = async (event: MessageEvent<{
       if (files.length && !localization.entries) snapshot.warnings.push('No CK3 localization entries were found in the selected files.');
       if (localization.collisions) snapshot.warnings.push(`Localization: ${localization.collisions} conflicting definitions; later sorted file/line wins.`);
       if (!snapshot.tables.characters.length) throw new Error('No supported character records found. This may not be a compatible CK3 gamestate.');
+      post('Indexing genealogy');
+      genealogy = new GenealogyGraph(snapshot.tables.characters, snapshot.tables.relationships);
       post('Building local DuckDB tables');
       database = await createDatabase(snapshot.tables, name => post(`Building analytical table: ${name}`));
       const tables = Object.fromEntries(Object.entries(snapshot.tables).map(([name, rows]) =>
@@ -82,6 +89,13 @@ self.onmessage = async (event: MessageEvent<{
       const living = snapshot.tables.characters.filter(row => row.status === 'Living').length;
       const houses = snapshot.tables.houses.map(h => ({ id: String(h.id), dynastyId: h.dynasty_id == null ? '' : String(h.dynasty_id), name: String(h.name ?? `House ${h.id}`) }));
       self.postMessage({ type: 'ready', date: snapshot.date, warnings: snapshot.warnings, tables, dynasties, houses, living });
+    } else if (event.data.type === 'genealogy-search' && genealogy) {
+      self.postMessage({ type: 'genealogy-search', requestId: event.data.requestId, people: genealogy.search(event.data.search ?? '', event.data.dynasty ?? '', 50) });
+    } else if (event.data.type === 'genealogy-graph' && genealogy && event.data.graph) {
+      self.postMessage({ type: 'genealogy-graph', requestId: event.data.requestId, graph: genealogy.subgraph(event.data.graph) });
+    } else if (event.data.type === 'genealogy-connection' && genealogy && event.data.id && event.data.target) {
+      const connection = genealogy.connection(event.data.id, event.data.target, event.data.includeMarriage, 20000);
+      self.postMessage({ type: 'genealogy-connection', requestId: event.data.requestId, connection, people: connection.ids.map(id => genealogy!.people.get(id)) });
     } else if (event.data.type === 'dashboard' && database && event.data.dashboard) {
       const results = await queryDashboard(database.connection, event.data.dashboard);
       self.postMessage({ type: 'dashboard', requestId: event.data.requestId, results });

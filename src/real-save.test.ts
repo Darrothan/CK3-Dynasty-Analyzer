@@ -9,6 +9,7 @@ import { normalize, type Row } from './model';
 import { createLocalization } from './localization';
 import { analyticalQuerySql, type CohortFilters } from './analytics';
 import { addDefinitions, emptyDefinitions } from './gameData';
+import { GenealogyGraph } from './genealogy';
 
 const path = process.env.CK3_INTEGRATION_SAVE;
 describe.skipIf(!path)('local real-save integration', () => {
@@ -41,6 +42,16 @@ describe.skipIf(!path)('local real-save integration', () => {
     expect(resolved).toBeDefined();
     expect(result.tables.houses.some(h => h.id === resolved?.house_id && h.dynasty_id === resolved.dynasty_id)).toBe(true);
     expect(new Set(result.tables.characters.map(c => c.id)).size).toBe(result.tables.characters.length);
+    const graphStart = performance.now();
+    const graph = new GenealogyGraph(result.tables.characters, result.tables.relationships);
+    expect(graph.people.size).toBe(result.tables.characters.length);
+    const related = result.tables.relationships.find(r => (r.relation === 'father' || r.relation === 'mother' || r.relation === 'parent') && graph.people.has(String(r.relative_id)));
+    if (!related) throw new Error('The supplied save has no retained parent relationship to validate.');
+    expect(graph.getParents(String(related.character_id))).toContain(String(related.relative_id));
+    const bounded = graph.subgraph({ focus: String(related.character_id), direction: 'both', depth: 4, limit: 200 });
+    expect(bounded.people.length).toBeLessThanOrEqual(200);
+    expect(new Set(bounded.people.map(person => person.id)).size).toBe(bounded.people.length);
+    expect(performance.now() - graphStart).toBeLessThan(10000);
     if (maleId !== null) expect(result.tables.characters.find(c => c.id === maleId)?.sex).toBe('Male');
     for (const house of result.tables.houses.filter(h => h.localized_name != null)) {
       expect(house.name).toBe(house.localized_name);

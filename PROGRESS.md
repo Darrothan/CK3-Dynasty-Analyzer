@@ -31,7 +31,16 @@ See [DEVELOPER.md](DEVELOPER.md) for schema, source paths, query API, denominato
 
 Further work is backlog, not a Milestone 2 blocker: extend localization and trait categorization when reliable metadata is available; improve ruler evidence; expand historical coverage, chart accessibility and result pagination beyond current limits; and broaden browser/save-version performance testing.
 
+## Milestone 3 — Genealogy graph and viewer — COMPLETE
+
+- [x] Indexed canonical character graph in the existing import worker, with recorded parent roles and separate spouse links; absent targets and unknown ruler status are not invented.
+- [x] Bounded ancestor/descendant traversals, branch collapse, cross-dynasty navigation, connective ruler/house/dynasty pruning and optional marriage-aware relationship paths.
+- [x] Search, selection, details, generation depth, pan/zoom, house colors and living/ruler indicators in Dynasty Explorer; bounded rendering and explicit truncation notices.
+- [x] Synthetic graph and UI tests, full production build, supplied-save integration and local browser interaction checks.
+- [x] Existing analytical dashboards and cohort behavior remain separate from genealogy.
+
+Advanced collision avoidance and lineage layout, richer marriage provenance, expanded save-version testing and a world-scale constellation remain future enhancements. See [DEVELOPER.md](DEVELOPER.md) for graph semantics and limits.
+
 ## Later milestones
 
-- [ ] Milestone 3: canonical ID-based bounded genealogy graph and focused viewer, including cross-dynasty relationships and pruning.
 - [ ] Milestone 4: evidence-based historical political analysis, multi-save comparison, richer genealogy layouts and reusable character/realm analytics.
