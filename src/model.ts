@@ -116,7 +116,7 @@ export function normalize(data: Record<string, unknown>, localization?: Localiza
   const characters: Row[] = [], characterTraits: Row[] = [], relationships: Row[] = [];
   const fieldCounts = new Map<string, number>();
   const warnings: string[] = [];
-  const seen = new Set<string>();
+  const characterRecords = new Map<string, { record: Record<string, unknown>; section: 'living' | 'dead_unprunable'; status: 'Living' | 'Deceased' }>();
   for (const [section, status] of [['living', 'Living'], ['dead_unprunable', 'Deceased']] as const) {
     const source = data[section];
     if (!isObject(source)) continue;
@@ -124,8 +124,18 @@ export function normalize(data: Record<string, unknown>, localization?: Localiza
     const dropped = Object.keys(source).length - converted.length;
     if (dropped) warnings.push(`${section}: ${dropped} ambiguous or invalid records omitted.`);
     for (const [id, c] of converted) {
-      if (seen.has(id)) { warnings.push(`Character ${id} appears in multiple sections; later record omitted.`); continue; }
-      seen.add(id);
+      if (characterRecords.has(id)) { warnings.push(`Character ${id} appears in multiple sections; later record omitted.`); continue; }
+      characterRecords.set(id, { record: c, section, status });
+    }
+  }
+  const houseHeadCultures = new Map<string, string>();
+  for (const [id, house] of houses) {
+    const headId = nonBlank(house.head_of_house);
+    const head = headId === null ? undefined : characterRecords.get(headId);
+    const culture = head ? nonBlank(head.record.culture) : null;
+    if (culture !== null) houseHeadCultures.set(id, culture);
+  }
+  for (const [id, { record: c, section, status }] of characterRecords) {
       for (const key of Object.keys(c)) {
         const path = `${section}/*/${key}`;
         fieldCounts.set(path, (fieldCounts.get(path) ?? 0) + 1);
@@ -141,7 +151,10 @@ export function normalize(data: Record<string, unknown>, localization?: Localiza
       const reversed = birthDate.key !== null && deathDate.key !== null && deathDate.key < birthDate.key;
       const inconsistent = birthFuture || deathFuture || reversed || (status === 'Living' && death !== null);
       const age = inconsistent ? null : ageAt(birth, status === 'Living' ? date : death);
-      const cultureId = text(c.culture), culture = cultureId === null ? undefined : cultureById.get(cultureId);
+      const rawCultureId = nonBlank(c.culture);
+      const cultureId = rawCultureId ?? (houseId === null ? null : houseHeadCultures.get(houseId) ?? null);
+      const cultureSource = rawCultureId !== null ? 'explicit' : cultureId !== null ? 'house_head' : 'unresolved';
+      const culture = cultureId === null ? undefined : cultureById.get(cultureId);
       const riteId = text(c.rite), rite = riteId === null ? undefined : riteById.get(riteId);
       const faithId = rite ? text(rite.faith) : null, faith = faithId === null ? undefined : faithById.get(faithId);
       const skills = items(c.skill);
@@ -157,7 +170,8 @@ export function normalize(data: Record<string, unknown>, localization?: Localiza
         age_group: age === null ? 'Unknown' : age < 16 ? '0–15' : age < 30 ? '16–29' : age < 50 ? '30–49' : age < 70 ? '50–69' : '70+',
         house_id: houseId, house: houseId === null ? null : house ? houseLabel(house, houseId) ?? `House ${houseId}` : `Unresolved house ${houseId}`,
         dynasty_id: dynastyId, dynasty: dynastyId === null ? null : dynasty ? dynastyLabel(dynasty, dynastyId) ?? `Dynasty ${dynastyId}` : `Unresolved dynasty ${dynastyId}`,
-        culture_id: cultureId, culture: cultureId === null ? null : culture ? label(nestedName(culture) ?? culture.culture_template) ?? `Culture ${cultureId}` : `Unresolved culture ${cultureId}`,
+        culture_id: cultureId, raw_culture_id: rawCultureId, culture_source: cultureSource,
+        culture: cultureId === null ? null : culture ? label(nestedName(culture) ?? culture.culture_template) ?? `Culture ${cultureId}` : `Unresolved culture ${cultureId}`,
         heritage_key: culture ? text(culture.heritage) : null, heritage: culture ? pillarLabel(culture.heritage) : null,
         language_key: culture ? text(culture.language) : null, language: culture ? pillarLabel(culture.language) : null,
         rite_id: riteId, faith_id: faithId,
@@ -178,7 +192,6 @@ export function normalize(data: Record<string, unknown>, localization?: Localiza
         for (const relative of items(family[kind])) {
           const relativeId = text(relative);
           if (relativeId !== null) relationships.push({ character_id: id, relation: kind, relative_id: relativeId, source_path: `${section}/${id}/family_data/${kind}`, derived: 'no' });
-        }
       }
     }
   }
@@ -221,16 +234,19 @@ export function normalize(data: Record<string, unknown>, localization?: Localiza
           issue: `${section} invalid or ambiguous records omitted`, count: isObject(source) ? Object.keys(source).length - records(source).length : 0,
         })),
         { issue: 'characters with unresolved house', count: characters.filter(c => c.house_id !== null && !houseById.has(String(c.house_id))).length },
+        ...(['explicit', 'house_head', 'unresolved'] as const).map(source => ({
+          issue: `characters with culture source ${source}`, count: characters.filter(c => c.culture_source === source).length,
+        })),
         { issue: 'characters with unresolved culture', count: characters.filter(c => c.culture_id !== null && !cultureById.has(String(c.culture_id))).length },
         { issue: 'houses with unresolved dynasty', count: houses.filter(([, h]) => h.dynasty != null && !dynastyById.has(String(h.dynasty))).length },
         { issue: 'faiths with unresolved religion', count: faiths.filter(([, f]) => f.religion != null && !religionById.has(String(f.religion))).length },
         { issue: 'rites with unresolved faith', count: rites.filter(([, r]) => r.faith != null && !faithById.has(String(r.faith))).length },
-        { issue: 'current title holders absent from parsed characters', count: titles.filter(([, t]) => t.holder != null && !seen.has(String(t.holder))).length },
+        { issue: 'current title holders absent from parsed characters', count: titles.filter(([, t]) => t.holder != null && !characterRecords.has(String(t.holder))).length },
         { issue: 'characters with unresolved rite', count: characters.filter(c => c.rite_id !== null && !riteById.has(String(c.rite_id))).length },
         { issue: 'characters with unresolved faith', count: characters.filter(c => c.faith_id !== null && !faithById.has(String(c.faith_id))).length },
         { issue: 'character trait links with unresolved lookup', count: characterTraits.filter(t => String(t.trait).startsWith('Unresolved trait ')).length },
         { issue: 'characters with missing or invalid age', count: characters.filter(c => c.age === null).length },
-        { issue: 'character relationships to absent records', count: relationships.filter(r => !seen.has(String(r.relative_id))).length },
+        { issue: 'character relationships to absent records', count: relationships.filter(r => !characterRecords.has(String(r.relative_id))).length },
         { issue: 'characters without recorded father link', count: characters.filter(c => !recordedFathers.has(c.id)).length },
         { issue: 'characters without recorded mother link', count: characters.filter(c => !recordedMothers.has(c.id)).length },
         ...(['missing', 'invalid', 'placeholder', 'after_snapshot'] as const).flatMap(quality => [

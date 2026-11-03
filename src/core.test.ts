@@ -48,6 +48,92 @@ describe('save input', () => {
 });
 
 describe('Jomini and normalized data', () => {
+  it('resolves omitted cultures from the explicit current head of the exact house', () => {
+    const source = {
+      living: {
+        member: { dynasty_house: 3 },
+        member2: { dynasty_house: '3', culture: '  ' },
+        override: { dynasty_house: '3', culture: 'irish' },
+        explicitDutch: { dynasty_house: '3', culture: 'dutch' },
+        parentHead: { dynasty_house: '2', culture: 'english' },
+        foundingHead: { dynasty_house: '1', culture: 'han' },
+        noHouse: {},
+        missingHouse: { dynasty_house: 'missing' },
+        noHead: { dynasty_house: '4' },
+        absentHead: { dynasty_house: '5' },
+        blankHead: { dynasty_house: '6' },
+        noHeadCulture: { dynasty_house: '6', culture: '' },
+        headWithFallback: { dynasty_house: '3' },
+        noRecursiveFallback: { dynasty_house: '7' },
+      },
+      dead_unprunable: {
+        formerHead: { dynasty_house: '3' },
+        formerEnglish: { dynasty_house: '3', culture: 'english' },
+        formerNorse: { dynasty_house: '3', culture: 'norse' },
+        head: { dynasty_house: '3', culture: 'dutch' },
+      },
+      dynasties: { dynasty_house: {
+        1: { dynasty: '1', head_of_house: 'foundingHead' },
+        2: { dynasty: '1', head_of_house: 'parentHead', parent_house: '1' },
+        3: { dynasty: '1', head_of_house: 'head', parent_house: '2' },
+        4: { dynasty: '1' },
+        5: { dynasty: '1', head_of_house: 'absent' },
+        6: { dynasty: '1', head_of_house: 'noHeadCulture' },
+        7: { dynasty: '1', head_of_house: 'headWithFallback' },
+      } },
+      culture_manager: { cultures: {
+        dutch: { name: 'Dutch', heritage: 'heritage_dutch', language: 'language_dutch' },
+        irish: { name: 'Irish' }, english: { name: 'English' }, norse: { name: 'Norse' }, han: { name: 'Han' },
+      } },
+    };
+    const result = normalize(source);
+    const characters = new Map(result.tables.characters.map(c => [c.id, c]));
+    for (const id of ['member', 'member2', 'formerHead', 'headWithFallback']) {
+      expect(characters.get(id)).toMatchObject({
+        culture_id: 'dutch', raw_culture_id: null, culture_source: 'house_head', culture: 'Dutch',
+        heritage_key: 'heritage_dutch', heritage: 'heritage_dutch', language_key: 'language_dutch', language: 'language_dutch',
+      });
+    }
+    expect(characters.get('explicitDutch')).toMatchObject({
+      culture_id: 'dutch', raw_culture_id: 'dutch', culture_source: 'explicit', culture: 'Dutch',
+      heritage_key: 'heritage_dutch', heritage: 'heritage_dutch', language_key: 'language_dutch', language: 'language_dutch',
+    });
+    for (const [id, culture] of [['override', 'irish'], ['formerEnglish', 'english'], ['formerNorse', 'norse']]) {
+      expect(characters.get(id)).toMatchObject({ culture_id: culture, raw_culture_id: culture, culture_source: 'explicit' });
+    }
+    for (const id of ['noHouse', 'missingHouse', 'noHead', 'absentHead', 'blankHead', 'noHeadCulture', 'noRecursiveFallback']) {
+      expect(characters.get(id)).toMatchObject({ culture_id: null, raw_culture_id: null, culture_source: 'unresolved', heritage: null, language: null });
+    }
+    expect(source.living.member).toEqual({ dynasty_house: 3 });
+    const diagnostics = Object.fromEntries(result.tables.import_diagnostics.map(r => [r.issue, r.count]));
+    expect(diagnostics['characters with culture source explicit']).toBe(7);
+    expect(diagnostics['characters with culture source house_head']).toBe(4);
+    expect(diagnostics['characters with culture source unresolved']).toBe(7);
+  });
+  it('uses the first valid character record for duplicate IDs across sections', () => {
+    const result = normalize({
+      living: { member: { dynasty_house: 1 }, head: { culture: 10 } },
+      dead_unprunable: { head: { culture: 20 } },
+      dynasties: { dynasty_house: { 1: { head_of_house: 'head' } } },
+    });
+    expect(result.tables.characters).toHaveLength(2);
+    expect(result.tables.characters[0]).toMatchObject({ culture_id: '10', culture_source: 'house_head', culture: 'Unresolved culture 10' });
+    expect(result.warnings).toContain('Character head appears in multiple sections; later record omitted.');
+  });
+  it('resolves and localizes culture from a later parsed head without modifying raw records', async () => {
+    const parser = await Jomini.initialize();
+    const parsed = parser.parseText(encode(`living={ 1={ dynasty_house=2 } }
+dead_unprunable={ 3={ dynasty_house=2 culture=4 } }
+dynasties={ dynasty_house={ 2={ head_of_house=3 } } }
+culture_manager={ cultures={ 4={ name=dutch heritage=heritage_dutch language=language_dutch } } }`), { typeNarrowing: 'none' });
+    const localization = createLocalization([{ path: 'culture.yml', content: 'l_english:\n dutch: "Dutch"\n heritage_dutch_name: "Dutch heritage"\n language_dutch_name: "Dutch language"\n' }]);
+    const result = normalize(parsed, localization);
+    expect(result.tables.characters[0]).toMatchObject({
+      culture_id: '4', culture_source: 'house_head', culture: 'Dutch',
+      heritage: 'Dutch heritage', language: 'Dutch language',
+    });
+    expect(parsed.living['1']).toEqual({ dynasty_house: '2' });
+  });
   it('parses nested data, repeated keys, arrays, numbers and non-ASCII text', async () => {
     const parser = await Jomini.initialize();
     const parsed = parser.parseText(extractGamestate(encode(fixture)), { typeNarrowing: 'none' });

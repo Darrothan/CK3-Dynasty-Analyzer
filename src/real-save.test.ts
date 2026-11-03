@@ -42,6 +42,15 @@ describe.skipIf(!path)('local real-save integration', () => {
     expect(resolved).toBeDefined();
     expect(result.tables.houses.some(h => h.id === resolved?.house_id && h.dynasty_id === resolved.dynasty_id)).toBe(true);
     expect(new Set(result.tables.characters.map(c => c.id)).size).toBe(result.tables.characters.length);
+    const charactersById = new Map(result.tables.characters.map(c => [c.id, c]));
+    const housesById = new Map(result.tables.houses.map(h => [h.id, h]));
+    for (const character of result.tables.characters.filter(c => c.culture_source === 'house_head')) {
+      const house = housesById.get(character.house_id);
+      const head = house && charactersById.get(house.head_id);
+      expect(head?.culture_source).toBe('explicit');
+      expect(character.culture_id).toBe(head?.raw_culture_id);
+      expect(character.raw_culture_id).toBeNull();
+    }
     const graphStart = performance.now();
     const graph = new GenealogyGraph(result.tables.characters, result.tables.relationships);
     expect(graph.people.size).toBe(result.tables.characters.length);
